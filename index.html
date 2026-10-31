@@ -157,6 +157,8 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
 .pad button:active { background: var(--line); }
 .sheet .actions { display: flex; gap: 8px; }
 .sheet .actions .btn { flex: 1; padding: 14px; }
+.check { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); cursor: pointer; }
+.check input { width: 20px; height: 20px; padding: 0; flex: none; accent-color: var(--accent); }
 .savings { display: flex; flex-direction: column; gap: 14px; }
 .savings:not(:empty) { border-top: 1px solid var(--line); padding-top: 12px; }
 .sv { display: flex; flex-direction: column; gap: 6px; }
@@ -180,6 +182,13 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
       <div class="notice" id="sampleNote" hidden>
         <span>지금 보이는 숫자는 예시예요.</span>
         <button class="btn small" id="clearSample" type="button">예시 지우고 시작하기</button>
+      </div>
+      <div class="notice" id="pastNote" hidden>
+        <span id="pastNoteText"></span>
+        <div class="inline">
+          <button class="btn small" id="pastFix" type="button">이전 지출로 바꾸기</button>
+          <button class="btn ghost small" id="pastNo" type="button">괜찮아요</button>
+        </div>
       </div>
       <div class="notice" id="setupNote" hidden>
         <span>월급과 월급날을 먼저 설정해 주세요.</span>
@@ -329,6 +338,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
       <input type="date" id="eDate" style="flex:1">
       <input id="eMemo" placeholder="메모 (선택)" style="flex:1.4">
     </div>
+    <label class="check" id="ePastWrap"><input type="checkbox" id="ePast"> 이전 지출 (오늘·이번 주 계산에서 빼기)</label>
     <div class="pad" id="pad"></div>
     <div class="actions">
       <button class="btn ghost" type="button" id="eDelete" hidden>삭제</button>
@@ -409,7 +419,8 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     const spent = sum(inP, "out"), extraIn = sum(inP, "in");
     const available = (S.salary || 0) + extraIn - fixedSum;
     const remain = available - spent;
-    const todayArr = inP.filter((e) => e.date === tKey);
+    // 이전 지출(past)은 이번 달 합계에만 들어가고 오늘·이번 주 계산에서는 빠짐
+    const todayArr = inP.filter((e) => e.date === tKey && !e.past);
     const todayOut = sum(todayArr, "out"), todayIn = sum(todayArr, "in");
     const daysLeft = Math.max(1, diffDays(today, next)); // 오늘 포함
     // 하루 평균: 오늘 아침 기준 남은 돈을 남은 날로 나눔 (오늘 안에서는 고정)
@@ -420,7 +431,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     const wStart = monday < start ? start : monday;
     const wEndEx = addDays(monday, 7) > next ? next : addDays(monday, 7);
     const wsKey = keyOf(wStart), weKey = keyOf(wEndEx);
-    const weekArr = inP.filter((e) => e.date >= wsKey && e.date < weKey);
+    const weekArr = inP.filter((e) => e.date >= wsKey && e.date < weKey && !e.past);
     const weekOut = sum(weekArr, "out");
     const weekBefore = sum(weekArr.filter((e) => e.date < tKey), "out");
     const weekBudget = weekBefore + daily * diffDays(today, wEndEx);
@@ -439,7 +450,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
   }
   function itemHTML(e, showDate) {
     const d = fromKey(e.date);
-    const sub = [showDate ? `${md(d)}(${DOW[d.getDay()]})` : "", e.memo].filter(Boolean).join(" · ");
+    const sub = [showDate ? `${md(d)}(${DOW[d.getDay()]})` : "", e.past ? "이전 지출" : "", e.memo].filter(Boolean).join(" · ");
     return `<button class="item" type="button" data-id="${e.id}">
       <span class="ico">${e.cat.slice(0, 2)}</span>
       <span class="t"><b>${e.cat}</b>${sub ? `<em>${esc(sub)}</em>` : ""}</span>
@@ -454,6 +465,11 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     $("period").textContent = `${md(c.start)} ~ ${md(addDays(c.next, -1))} · 남은 ${c.daysLeft}일`;
     $("sampleNote").hidden = !S.sample;
     $("setupNote").hidden = !!S.salary;
+    // 처음 쓰는 날, 이번 달에 이미 쓴 돈을 오늘 날짜로 몰아 넣어서 오늘 한도가 마이너스일 때만 안내
+    const firstDay = S.entries.every((e) => e.ts && new Date(e.ts) >= c.today);
+    const fixable = todayFixable();
+    $("pastNote").hidden = S.sample || S.pastNoteOff || !firstDay || c.todayLeft >= 0 || !fixable.length;
+    $("pastNoteText").textContent = `오늘 입력한 지출 ${fixable.length}건(${won(fixable.reduce((a, e) => a + e.amount, 0))})이 오늘 쓴 돈으로 계산되고 있어요. 이번 달에 이미 썼던 돈이면 '이전 지출'로 바꿔 주세요.`;
     setMoney($("remain"), c.remain);
     $("remain").classList.toggle("pos", c.remain >= 0);
     $("avail").textContent = won(c.available);
@@ -501,6 +517,14 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     $("fixedSum").textContent = won(c.fixedSum);
     $("assetList").innerHTML = S.assets.map((x) => `<div class="item" style="cursor:default"><span class="t"><b>${esc(x.name)}</b></span><span class="num">${won(x.amount)}</span><button class="btn ghost small" type="button" data-as="${x.id}">삭제</button></div>`).join("") || `<div class="empty">등록된 자산이 없어요.</div>`;
   }
+
+  const todayFixable = () => S.entries.filter((e) => e.date === keyOf(new Date()) && e.type === "out" && !e.past);
+  $("pastFix").onclick = () => {
+    const n = todayFixable().length;
+    todayFixable().forEach((e) => (e.past = true)); S.pastNoteOff = true; save(); render();
+    toast(`${n}건을 이전 지출로 바꿨어요`);
+  };
+  $("pastNo").onclick = () => { S.pastNoteOff = true; save(); render(); };
 
   // 화면 전환
   function go(v) {
@@ -606,12 +630,13 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
   function drawSheet() {
     $("tOut").setAttribute("aria-pressed", String(draft.type === "out")); $("tIn").setAttribute("aria-pressed", String(draft.type === "in"));
     $("amtView").textContent = won(draft.amount); $("amtView").classList.toggle("placeholder", !draft.amount);
+    $("ePastWrap").hidden = draft.type !== "out";
     $("cats").innerHTML = CATS[draft.type].map((c) => `<button type="button" data-c="${c}" aria-pressed="${c === draft.cat}">${c}</button>`).join("");
   }
   function openSheet(entry) {
     draft = entry ? { ...entry } : { id: null, type: "out", amount: 0, cat: "식비", memo: "", date: keyOf(new Date()) };
     $("sheetTitle").textContent = entry ? "내역 수정" : "내역 추가";
-    $("eDate").value = draft.date; $("eMemo").value = draft.memo || "";
+    $("eDate").value = draft.date; $("eMemo").value = draft.memo || ""; $("ePast").checked = !!draft.past;
     $("eDelete").hidden = !entry; $("eDelete").textContent = "삭제"; $("eDelete").dataset.confirm = "";
     drawSheet(); $("sheetBg").hidden = false;
   }
@@ -622,6 +647,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
   $("eSave").onclick = () => {
     if (!draft.amount) { toast("금액을 입력해 주세요"); return; }
     draft.date = $("eDate").value || keyOf(new Date()); draft.memo = $("eMemo").value.trim();
+    if (draft.type === "out" && $("ePast").checked) draft.past = true; else delete draft.past;
     if (S.sample) S.sample = false;
     if (draft.id) S.entries = S.entries.map((e) => (e.id === draft.id ? draft : e));
     else S.entries.push({ ...draft, id: uid(), ts: new Date().toISOString() });
