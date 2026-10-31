@@ -84,7 +84,7 @@ h1, h2 { margin: 0; font-weight: 400; text-wrap: balance; }
 .rows { display: grid; gap: 6px; }
 .row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; }
 .row span:first-child { color: var(--muted); }
-.row span:last-child { font-weight: 500; }
+.row span:last-child { font-weight: 500; white-space: nowrap; }
 .duo .row span { white-space: nowrap; }
 .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 360px) { .duo { grid-template-columns: 1fr; } }
@@ -200,7 +200,8 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
         <div class="big num" id="remain"></div>
         <div class="bar" id="monthBar"><i></i></div>
         <div class="rows num">
-          <div class="row"><span>쓸 수 있는 돈 (월급 + 수입 − 고정지출)</span><span id="avail"></span></div>
+          <div class="row"><span id="availLabel">쓸 수 있는 돈 (월급 + 수입 − 고정지출)</span><span id="avail"></span></div>
+          <div class="row" id="goalRow" hidden><span>목표 저축으로 떼어둔 돈</span><span id="goalSum"></span></div>
           <div class="row"><span>지금까지 쓴 돈</span><span id="spent"></span></div>
         </div>
       </div>
@@ -226,6 +227,11 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
             <div class="row"><span>기간</span><span id="weekRange"></span></div>
           </div>
         </div>
+      </div>
+
+      <div class="card">
+        <div class="top"><h2 class="label">목표 저축</h2><button class="btn ghost small" type="button" data-go="settings">관리</button></div>
+        <div class="savings" id="goalsHome" style="border-top:0;padding-top:0"></div>
       </div>
 
       <div class="card">
@@ -285,6 +291,20 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
         </div>
         <p class="hint" id="fxSavingHint" hidden>이번 달에 낸 것까지 포함해서 적어 주세요. 월급날마다 1회차씩 자동으로 늘어나고, 만기가 되면 고정지출에서 빠져요.</p>
         <button class="btn" type="button" id="fxAdd">추가</button>
+      </div>
+
+      <div class="card">
+        <span class="label">목표 저축 (여행, 큰 지출 등)</span>
+        <div class="list" id="goalList"></div>
+        <div class="inline">
+          <input id="glName" placeholder="이름 (예: 일본여행)" style="flex:1.3">
+          <input id="glAmt" inputmode="numeric" placeholder="목표 금액" style="flex:1">
+        </div>
+        <div class="inline">
+          <select id="glMonths" style="flex:1"></select>
+          <button class="btn" type="button" id="glAdd">추가</button>
+        </div>
+        <p class="hint" id="glHint">목표 금액을 개월 수로 나눠서, 매달 쓸 수 있는 돈에서 미리 떼어둬요. 그만큼 하루·이번 주에 쓸 수 있는 돈이 줄어요.</p>
       </div>
 
       <div class="card">
@@ -376,6 +396,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
         { id: uid(), name: "청년적금", amount: 300000, kind: "saving", total: 12, startYm: ps - 5 },
       ],
       assets: [{ id: uid(), name: "통장 잔고", amount: 1200000 }, { id: uid(), name: "비상금", amount: 500000 }],
+      goals: [{ id: uid(), name: "일본여행", target: 1500000, months: 3, startYm: ps }],
       entries: [
         e(0, "out", 8500, "식비", "김밥천국"), e(0, "out", 4500, "카페", "아메리카노"), e(0, "in", 30000, "부수입", "중고거래"),
         e(1, "out", 12000, "식비", "점심"), e(1, "out", 1450, "교통", "버스"), e(2, "out", 32000, "쇼핑", "다이소·올리브영"),
@@ -388,6 +409,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
   try { S = JSON.parse(localStorage.getItem(KEY)); } catch (_) { S = null; }
   if (!S || !Array.isArray(S.entries)) S = sample();
   if (!Array.isArray(S.assets)) S.assets = [];
+  if (!Array.isArray(S.goals)) S.goals = [];
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (_) {} };
 
   // 월급날 기준 이번 달 기간: [start, next)
@@ -417,7 +439,15 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     const savedSum = savings.reduce((a, s) => a + s.saved, 0);
     const assetSum = S.assets.reduce((a, x) => a + x.amount, 0);
     const spent = sum(inP, "out"), extraIn = sum(inP, "in");
-    const available = (S.salary || 0) + extraIn - fixedSum;
+    // 목표 저축: 목표 금액 ÷ 개월 수만큼 매달 쓸 돈에서 미리 떼어둠 (천 원 단위 올림)
+    const goals = S.goals.map((g) => {
+      const n = ymOf(start) - g.startYm + 1;
+      const monthly = Math.ceil(g.target / g.months / 1000) * 1000;
+      const paid = Math.max(0, Math.min(g.months, n));
+      return { ...g, monthly, paid, active: n >= 1 && n <= g.months, done: n > g.months, saved: Math.min(g.target, paid * monthly) };
+    });
+    const goalSum = goals.filter((g) => g.active).reduce((a, g) => a + g.monthly, 0);
+    const available = (S.salary || 0) + extraIn - fixedSum - goalSum;
     const remain = available - spent;
     // 이전 지출(past)은 이번 달 합계에만 들어가고 오늘·이번 주 계산에서는 빠짐
     const todayArr = inP.filter((e) => e.date === tKey && !e.past);
@@ -438,7 +468,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     const weekLeft = weekBudget - weekOut;
     return { today, start, next, daysLeft, fixedSum, spent, available, remain, todayOut, todayIn, daily, todayLeft,
       wStart, wEnd: addDays(wEndEx, -1), weekOut, weekBudget, weekLeft,
-      savings, savedSum, assetSum, worth: savedSum + assetSum };
+      savings, savedSum, assetSum, worth: savedSum + assetSum, goals, goalSum };
   }
 
   const setMoney = (el, n) => { el.innerHTML = `${n < 0 ? "−" : ""}${Math.abs(Math.round(n)).toLocaleString("ko-KR")}<small>원</small>`; el.classList.toggle("neg", n < 0); };
@@ -473,6 +503,14 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     setMoney($("remain"), c.remain);
     $("remain").classList.toggle("pos", c.remain >= 0);
     $("avail").textContent = won(c.available);
+    $("availLabel").textContent = c.goalSum ? "쓸 수 있는 돈 (목표 저축 뺀 후)" : "쓸 수 있는 돈 (월급 + 수입 − 고정지출)";
+    $("goalRow").hidden = !c.goalSum; $("goalSum").textContent = won(c.goalSum);
+    $("goalsHome").innerHTML = c.goals.map((g) => `<div class="sv num">
+        <div class="row"><b>${esc(g.name)}</b><span>${g.done ? "목표 달성 🎉" : `${g.paid} / ${g.months}개월`}</span></div>
+        <div class="bar${g.done ? " done" : ""}"><i style="width:${(g.saved / g.target * 100).toFixed(1)}%"></i></div>
+        <div class="row"><span>모은 돈 ${won(g.saved)}</span><span>목표 ${won(g.target)}</span></div>
+        ${g.active ? `<div class="row"><span>이번 달 ${won(g.monthly)} 떼어둠</span><span>하루 약 ${won(Math.round(g.monthly / c.daysLeft / 100) * 100)} 덜 쓰기</span></div>` : ""}
+      </div>`).join("") || `<div class="empty">목표를 만들면 쓸 수 있는 돈에서 미리 떼어둬요. 예: 3개월 뒤 일본여행 150만 원</div>`;
     $("spent").textContent = won(c.spent);
     const ratio = c.available > 0 ? Math.min(1, c.spent / c.available) : (c.spent > 0 ? 1 : 0);
     $("monthBar").firstElementChild.style.width = (ratio * 100).toFixed(1) + "%";
@@ -515,7 +553,8 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
       return `<div class="item" style="cursor:default"><span class="t"><b>${esc(f.name)}</b>${sub ? `<em>${sub}</em>` : ""}</span><span class="num">${won(f.amount)}</span><button class="btn ghost small" type="button" data-fx="${f.id}">삭제</button></div>`;
     }).join("") || `<div class="empty">등록된 고정지출이 없어요.</div>`;
     $("fixedSum").textContent = won(c.fixedSum);
-    $("assetList").innerHTML = S.assets.map((x) => `<div class="item" style="cursor:default"><span class="t"><b>${esc(x.name)}</b></span><span class="num">${won(x.amount)}</span><button class="btn ghost small" type="button" data-as="${x.id}">삭제</button></div>`).join("") || `<div class="empty">등록된 자산이 없어요.</div>`;
+    $("goalList").innerHTML = c.goals.map((g) => `<div class="item" style="cursor:default"><span class="t"><b>${esc(g.name)}</b><em>${g.done ? "목표 달성" : `매달 ${won(g.monthly)} · ${g.paid}/${g.months}개월`}</em></span><span class="num">${won(g.target)}</span><button class="btn ghost small" type="button" data-gl="${g.id}">삭제</button></div>`).join("") || `<div class="empty">등록된 목표가 없어요.</div>`;
+    $("assetList").innerHTML =S.assets.map((x) => `<div class="item" style="cursor:default"><span class="t"><b>${esc(x.name)}</b></span><span class="num">${won(x.amount)}</span><button class="btn ghost small" type="button" data-as="${x.id}">삭제</button></div>`).join("") || `<div class="empty">등록된 자산이 없어요.</div>`;
   }
 
   const todayFixable = () => S.entries.filter((e) => e.date === keyOf(new Date()) && e.type === "out" && !e.past);
@@ -541,6 +580,8 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     if (fx) { S.fixed = S.fixed.filter((f) => f.id !== fx.dataset.fx); save(); render(); }
     const as = ev.target.closest("[data-as]");
     if (as) { S.assets = S.assets.filter((x) => x.id !== as.dataset.as); save(); render(); }
+    const gl = ev.target.closest("[data-gl]");
+    if (gl) { S.goals = S.goals.filter((g) => g.id !== gl.dataset.gl); save(); render(); }
   });
 
   function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => (t.hidden = true), 1600); }
@@ -568,7 +609,21 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
 
   // 설정
   for (let i = 1; i <= 31; i++) $("payday").insertAdjacentHTML("beforeend", `<option value="${i}">매달 ${i}일</option>`);
-  liveComma($("salary")); liveComma($("fxAmt")); liveComma($("asAmt"));
+  liveComma($("salary")); liveComma($("fxAmt")); liveComma($("asAmt")); liveComma($("glAmt"));
+  for (let i = 1; i <= 24; i++) $("glMonths").insertAdjacentHTML("beforeend", `<option value="${i}"${i === 3 ? " selected" : ""}>${i}개월 동안 모으기</option>`);
+  const glDefaultHint = $("glHint").textContent;
+  const glPreview = () => {
+    const amt = parseNum($("glAmt").value), m = Number($("glMonths").value);
+    $("glHint").textContent = amt ? `매달 ${won(Math.ceil(amt / m / 1000) * 1000)}씩 쓸 수 있는 돈에서 떼어둬요. 이번 달부터 시작해요.` : glDefaultHint;
+  };
+  $("glAmt").addEventListener("input", glPreview); $("glMonths").addEventListener("change", glPreview);
+  $("glAdd").onclick = () => {
+    const name = $("glName").value.trim(), target = parseNum($("glAmt").value), months = Number($("glMonths").value);
+    if (!name || !target) { toast("이름과 목표 금액을 입력해 주세요"); return; }
+    S.goals.push({ id: uid(), name, target, months, startYm: ymOf(compute().start) }); S.sample = false;
+    $("glName").value = ""; $("glAmt").value = ""; glPreview(); save(); render();
+    toast(`${name} 목표를 만들었어요`);
+  };
   function fillSettings() { $("salary").value = S.salary ? S.salary.toLocaleString("ko-KR") : ""; $("payday").value = S.payday || 25; }
   $("saveSalary").onclick = () => { S.salary = parseNum($("salary").value); S.payday = Number($("payday").value); S.sample = false; save(); render(); toast("저장했어요"); };
   let fxKind = "normal";
@@ -602,7 +657,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     S.sample = false; $("asName").value = ""; $("asAmt").value = ""; save(); render();
     toast(same ? `${name} 금액을 바꿨어요` : "자산을 추가했어요");
   };
-  const blank = () => ({ sample: false, salary: 0, payday: 25, fixed: [], assets: [], entries: [] });
+  const blank = () => ({ sample: false, salary: 0, payday: 25, fixed: [], assets: [], goals: [], entries: [] });
   function showReset() {
     $("resetArea").innerHTML = `<button class="btn ghost" type="button" id="resetBtn">모든 기록 지우기</button>`;
     $("resetBtn").onclick = () => {
