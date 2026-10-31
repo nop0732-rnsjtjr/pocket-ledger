@@ -152,6 +152,11 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
 .pad button:active { background: var(--line); }
 .sheet .actions { display: flex; gap: 8px; }
 .sheet .actions .btn { flex: 1; padding: 14px; }
+.savings { display: flex; flex-direction: column; gap: 14px; }
+.savings:not(:empty) { border-top: 1px solid var(--line); padding-top: 12px; }
+.sv { display: flex; flex-direction: column; gap: 6px; }
+.sv .row b { font-weight: 500; color: var(--ink); }
+.bar.done > i { background: var(--income); }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(140px + env(safe-area-inset-bottom, 0px)); z-index: 30; background: var(--ink); color: var(--paper); padding: 10px 16px; border-radius: 99px; font-size: 13px; }
 </style>
 </head>
@@ -210,6 +215,13 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
       </div>
 
       <div class="card">
+        <div class="top"><h2 class="label">내 재산</h2><button class="btn ghost small" type="button" data-go="settings">관리</button></div>
+        <div class="big num" id="worth"></div>
+        <div class="rows num" id="worthRows"></div>
+        <div class="savings" id="savingsHome"></div>
+      </div>
+
+      <div class="card">
         <div class="top"><h2 class="label">최근 내역</h2><button class="btn ghost small" type="button" data-go="list">전체 보기</button></div>
         <div class="list" id="recent"></div>
       </div>
@@ -245,11 +257,31 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
         <span class="label">고정지출 (매달 월급날에 자동으로 빠져요)</span>
         <div class="list" id="fixedList"></div>
         <div class="row num" style="font-size:14px"><span>합계</span><span id="fixedSum"></span></div>
+        <div class="seg" id="fxKind">
+          <button type="button" data-kind="normal" aria-pressed="true">일반 고정지출</button>
+          <button type="button" data-kind="saving" aria-pressed="false">적금 · 저축</button>
+        </div>
         <div class="inline">
           <input id="fxName" placeholder="이름 (예: 통신비)" style="flex:1.3">
-          <input id="fxAmt" inputmode="numeric" placeholder="금액" style="flex:1">
-          <button class="btn" type="button" id="fxAdd">추가</button>
+          <input id="fxAmt" inputmode="numeric" placeholder="매달 금액" style="flex:1">
         </div>
+        <div class="inline" id="fxSavingFields" hidden>
+          <input id="fxTotal" inputmode="numeric" placeholder="총 회차 (예: 12)">
+          <input id="fxPaid" inputmode="numeric" placeholder="지금까지 낸 회차">
+        </div>
+        <p class="hint" id="fxSavingHint" hidden>이번 달에 낸 것까지 포함해서 적어 주세요. 월급날마다 1회차씩 자동으로 늘어나고, 만기가 되면 고정지출에서 빠져요.</p>
+        <button class="btn" type="button" id="fxAdd">추가</button>
+      </div>
+
+      <div class="card">
+        <span class="label">자산 (통장 잔고, 비상금, 투자 등)</span>
+        <div class="list" id="assetList"></div>
+        <div class="inline">
+          <input id="asName" placeholder="이름 (예: 비상금)" style="flex:1.3">
+          <input id="asAmt" inputmode="numeric" placeholder="금액" style="flex:1">
+          <button class="btn" type="button" id="asAdd">추가</button>
+        </div>
+        <p class="hint">내 재산 = 적금으로 모은 돈 + 여기 적은 자산. 같은 이름으로 다시 추가하면 금액만 바뀌어요.</p>
       </div>
 
       <div class="card">
@@ -305,16 +337,20 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
   const md = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
   const DOW = ["일", "월", "화", "수", "목", "금", "토"];
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const ymOf = (d) => d.getFullYear() * 12 + d.getMonth(); // 월 단위 번호 (회차 계산용)
 
   function sample() {
     const t = new Date(); const day = (n) => keyOf(addDays(t, -n));
     const e = (n, type, amount, cat, memo) => ({ id: uid(), type, amount, cat, memo, date: day(n) });
+    const ps = ymOf(periodOf(new Date(t.getFullYear(), t.getMonth(), t.getDate()), 25).start);
     return {
       sample: true, salary: 2500000, payday: 25,
       fixed: [
         { id: uid(), name: "월세", amount: 450000 }, { id: uid(), name: "통신비", amount: 55000 },
-        { id: uid(), name: "넷플릭스", amount: 13500 }, { id: uid(), name: "적금", amount: 300000 },
+        { id: uid(), name: "넷플릭스", amount: 13500 },
+        { id: uid(), name: "청년적금", amount: 300000, kind: "saving", total: 12, startYm: ps - 5 },
       ],
+      assets: [{ id: uid(), name: "통장 잔고", amount: 1200000 }, { id: uid(), name: "비상금", amount: 500000 }],
       entries: [
         e(0, "out", 8500, "식비", "김밥천국"), e(0, "out", 4500, "카페", "아메리카노"), e(0, "in", 30000, "부수입", "중고거래"),
         e(1, "out", 12000, "식비", "점심"), e(1, "out", 1450, "교통", "버스"), e(2, "out", 32000, "쇼핑", "다이소·올리브영"),
@@ -326,6 +362,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
   let S;
   try { S = JSON.parse(localStorage.getItem(KEY)); } catch (_) { S = null; }
   if (!S || !Array.isArray(S.entries)) S = sample();
+  if (!Array.isArray(S.assets)) S.assets = [];
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (_) {} };
 
   // 월급날 기준 이번 달 기간: [start, next)
@@ -344,7 +381,16 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     const sKey = keyOf(start), nKey = keyOf(next);
     const inP = S.entries.filter((e) => e.date >= sKey && e.date < nKey);
     const sum = (arr, type) => arr.filter((e) => e.type === type).reduce((a, e) => a + e.amount, 0);
-    const fixedSum = S.fixed.reduce((a, f) => a + f.amount, 0);
+    // 적금: 이번 기간이 몇 회차인지 계산. 시작 전이거나 만기가 지나면 이번 달 고정지출에서 뺌
+    const savings = S.fixed.filter((f) => f.kind === "saving").map((f) => {
+      const n = ymOf(start) - f.startYm + 1;
+      const paid = Math.max(0, Math.min(f.total, n));
+      return { ...f, paid, active: n >= 1 && n <= f.total, saved: paid * f.amount, goal: f.total * f.amount };
+    });
+    const isActive = (f) => f.kind !== "saving" || savings.find((s) => s.id === f.id).active;
+    const fixedSum = S.fixed.filter(isActive).reduce((a, f) => a + f.amount, 0);
+    const savedSum = savings.reduce((a, s) => a + s.saved, 0);
+    const assetSum = S.assets.reduce((a, x) => a + x.amount, 0);
     const spent = sum(inP, "out"), extraIn = sum(inP, "in");
     const available = (S.salary || 0) + extraIn - fixedSum;
     const remain = available - spent;
@@ -365,7 +411,8 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     const weekBudget = weekBefore + daily * diffDays(today, wEndEx);
     const weekLeft = weekBudget - weekOut;
     return { today, start, next, daysLeft, fixedSum, spent, available, remain, todayOut, todayIn, daily, todayLeft,
-      wStart, wEnd: addDays(wEndEx, -1), weekOut, weekBudget, weekLeft };
+      wStart, wEnd: addDays(wEndEx, -1), weekOut, weekBudget, weekLeft,
+      savings, savedSum, assetSum, worth: savedSum + assetSum };
   }
 
   const setMoney = (el, n) => { el.innerHTML = `${n < 0 ? "−" : ""}${Math.abs(Math.round(n)).toLocaleString("ko-KR")}<small>원</small>`; el.classList.toggle("neg", n < 0); };
@@ -405,6 +452,18 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     $("weekBudget").textContent = won(c.weekBudget); $("weekOut").textContent = won(c.weekOut);
     $("weekRange").textContent = `${md(c.wStart)}~${md(c.wEnd)}`;
 
+    setMoney($("worth"), c.worth);
+    $("worthRows").innerHTML = (c.savings.length ? `<div class="row"><span>적금으로 모은 돈</span><span>${won(c.savedSum)}</span></div>` : "")
+      + S.assets.map((x) => `<div class="row"><span>${esc(x.name)}</span><span>${won(x.amount)}</span></div>`).join("")
+      || `<div class="empty">설정에서 적금이나 통장 잔고 같은 자산을 추가해 보세요.</div>`;
+    $("savingsHome").innerHTML = c.savings.map((s) => {
+      const done = s.paid >= s.total;
+      return `<div class="sv num">
+        <div class="row"><b>${esc(s.name)}</b><span>${done ? "만기 완료" : `${s.paid} / ${s.total}회차`}</span></div>
+        <div class="bar${done ? " done" : ""}"><i style="width:${(s.paid / s.total * 100).toFixed(1)}%"></i></div>
+        <div class="row"><span>모은 돈 ${won(s.saved)}</span><span>만기 ${won(s.goal)}</span></div></div>`;
+    }).join("");
+
     const list = sorted();
     $("recent").innerHTML = list.slice(0, 5).map((e) => itemHTML(e, true)).join("") || `<div class="empty">아직 기록이 없어요. + 버튼으로 첫 내역을 추가해 보세요.</div>`;
     $("listPeriod").textContent = `${md(c.start)} ~ ${md(addDays(c.next, -1))}`;
@@ -419,8 +478,13 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     }
     $("allList").innerHTML = html || `<div class="empty">아직 기록이 없어요.</div>`;
 
-    $("fixedList").innerHTML = S.fixed.map((f) => `<div class="item" style="cursor:default"><span class="t"><b>${esc(f.name)}</b></span><span class="num">${won(f.amount)}</span><button class="btn ghost small" type="button" data-fx="${f.id}">삭제</button></div>`).join("") || `<div class="empty">등록된 고정지출이 없어요.</div>`;
+    $("fixedList").innerHTML = S.fixed.map((f) => {
+      const s = c.savings.find((x) => x.id === f.id);
+      const sub = s ? `적금 · ${s.paid >= s.total ? "만기 완료" : `${s.paid}/${s.total}회차`} · 모은 돈 ${won(s.saved)}` : "";
+      return `<div class="item" style="cursor:default"><span class="t"><b>${esc(f.name)}</b>${sub ? `<em>${sub}</em>` : ""}</span><span class="num">${won(f.amount)}</span><button class="btn ghost small" type="button" data-fx="${f.id}">삭제</button></div>`;
+    }).join("") || `<div class="empty">등록된 고정지출이 없어요.</div>`;
     $("fixedSum").textContent = won(c.fixedSum);
+    $("assetList").innerHTML = S.assets.map((x) => `<div class="item" style="cursor:default"><span class="t"><b>${esc(x.name)}</b></span><span class="num">${won(x.amount)}</span><button class="btn ghost small" type="button" data-as="${x.id}">삭제</button></div>`).join("") || `<div class="empty">등록된 자산이 없어요.</div>`;
   }
 
   // 화면 전환
@@ -436,6 +500,8 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     const it = ev.target.closest(".item[data-id]"); if (it) openSheet(S.entries.find((e) => e.id === it.dataset.id));
     const fx = ev.target.closest("[data-fx]");
     if (fx) { S.fixed = S.fixed.filter((f) => f.id !== fx.dataset.fx); save(); render(); }
+    const as = ev.target.closest("[data-as]");
+    if (as) { S.assets = S.assets.filter((x) => x.id !== as.dataset.as); save(); render(); }
   });
 
   function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => (t.hidden = true), 1600); }
@@ -444,15 +510,41 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
 
   // 설정
   for (let i = 1; i <= 31; i++) $("payday").insertAdjacentHTML("beforeend", `<option value="${i}">매달 ${i}일</option>`);
-  liveComma($("salary")); liveComma($("fxAmt"));
+  liveComma($("salary")); liveComma($("fxAmt")); liveComma($("asAmt"));
   function fillSettings() { $("salary").value = S.salary ? S.salary.toLocaleString("ko-KR") : ""; $("payday").value = S.payday || 25; }
   $("saveSalary").onclick = () => { S.salary = parseNum($("salary").value); S.payday = Number($("payday").value); S.sample = false; save(); render(); toast("저장했어요"); };
+  let fxKind = "normal";
+  $("fxKind").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-kind]"); if (!b) return;
+    fxKind = b.dataset.kind;
+    $("fxKind").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    $("fxSavingFields").hidden = $("fxSavingHint").hidden = fxKind !== "saving";
+    $("fxName").placeholder = fxKind === "saving" ? "이름 (예: 청년적금)" : "이름 (예: 통신비)";
+  });
   $("fxAdd").onclick = () => {
     const name = $("fxName").value.trim(), amount = parseNum($("fxAmt").value);
     if (!name || !amount) { toast("이름과 금액을 입력해 주세요"); return; }
-    S.fixed.push({ id: uid(), name, amount }); S.sample = false; $("fxName").value = ""; $("fxAmt").value = ""; save(); render();
+    const item = { id: uid(), name, amount };
+    if (fxKind === "saving") {
+      const total = parseNum($("fxTotal").value), paid = parseNum($("fxPaid").value);
+      if (!total) { toast("총 회차를 입력해 주세요"); return; }
+      if (paid > total) { toast("낸 회차가 총 회차보다 많아요"); return; }
+      // 이번 기간이 paid회차가 되도록 시작 월을 거꾸로 계산
+      Object.assign(item, { kind: "saving", total, startYm: ymOf(compute().start) - paid + 1 });
+    }
+    S.fixed.push(item); S.sample = false;
+    ["fxName", "fxAmt", "fxTotal", "fxPaid"].forEach((id) => ($(id).value = ""));
+    save(); render();
   };
-  const blank = () => ({ sample: false, salary: 0, payday: 25, fixed: [], entries: [] });
+  $("asAdd").onclick = () => {
+    const name = $("asName").value.trim(), amount = parseNum($("asAmt").value);
+    if (!name) { toast("이름을 입력해 주세요"); return; }
+    const same = S.assets.find((x) => x.name === name);
+    if (same) same.amount = amount; else S.assets.push({ id: uid(), name, amount });
+    S.sample = false; $("asName").value = ""; $("asAmt").value = ""; save(); render();
+    toast(same ? `${name} 금액을 바꿨어요` : "자산을 추가했어요");
+  };
+  const blank = () => ({ sample: false, salary: 0, payday: 25, fixed: [], assets: [], entries: [] });
   function showReset() {
     $("resetArea").innerHTML = `<button class="btn ghost" type="button" id="resetBtn">모든 기록 지우기</button>`;
     $("resetBtn").onclick = () => {
