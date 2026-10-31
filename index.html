@@ -335,6 +335,12 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
       </div>
 
       <div class="card">
+        <span class="label">주간 정산 기록 (저금 · 이월)</span>
+        <div class="list" id="weekLog"></div>
+        <p class="hint">취소하면 그 돈이 다시 쓸 수 있는 돈으로 돌아가요. 지난주 기록을 취소하면 홈에서 다시 고를 수 있어요.</p>
+      </div>
+
+      <div class="card">
         <span class="label">자산 (통장 잔고, 비상금, 투자 등)</span>
         <div class="list" id="assetList"></div>
         <div class="inline">
@@ -612,7 +618,11 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
       return `<div class="item" style="cursor:default"><span class="t"><b>${esc(f.name)}</b>${sub ? `<em>${sub}</em>` : ""}</span><span class="num">${won(f.amount)}</span><button class="btn ghost small" type="button" data-fx="${f.id}">삭제</button></div>`;
     }).join("") || `<div class="empty">등록된 고정지출이 없어요.</div>`;
     $("fixedSum").textContent = won(c.fixedSum);
-    $("goalList").innerHTML = c.goals.map((g) => `<div class="item" style="cursor:default"><span class="t"><b>${esc(g.name)}</b><em>${g.done ? "목표 달성" : `매달 ${won(g.monthly)} · ${g.paid}/${g.months}개월`}</em></span><span class="num">${won(g.target)}</span><button class="btn ghost small" type="button" data-gl="${g.id}">삭제</button></div>`).join("") || `<div class="empty">등록된 목표가 없어요.</div>`;
+    const LW = { carry: "이번 주로 이월", save: "저금", spread: "남은 기간에 나눔" };
+    $("weekLog").innerHTML = Object.entries(S.weeks).filter(([, r]) => r.choice).sort(([a], [b]) => b.localeCompare(a))
+      .map(([k, r]) => `<div class="item" style="cursor:default"><span class="t"><b>${LW[r.choice]}</b><em>${md(fromKey(k))}부터 한 주</em></span><span class="num">${won(r.amount)}</span><button class="btn ghost small" type="button" data-wk="${k}">취소</button></div>`)
+      .join("") || `<div class="empty">아직 기록이 없어요.</div>`;
+    $("goalList").innerHTML =c.goals.map((g) => `<div class="item" style="cursor:default"><span class="t"><b>${esc(g.name)}</b><em>${g.done ? "목표 달성" : `매달 ${won(g.monthly)} · ${g.paid}/${g.months}개월`}</em></span><span class="num">${won(g.target)}</span><button class="btn ghost small" type="button" data-gl="${g.id}">삭제</button></div>`).join("") || `<div class="empty">등록된 목표가 없어요.</div>`;
     $("assetList").innerHTML =S.assets.map((x) => `<div class="item" style="cursor:default"><span class="t"><b>${esc(x.name)}</b></span><span class="num">${won(x.amount)}</span><button class="btn ghost small" type="button" data-as="${x.id}">삭제</button></div>`).join("") || `<div class="empty">등록된 자산이 없어요.</div>`;
   }
 
@@ -677,6 +687,13 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     if (as) { S.assets = S.assets.filter((x) => x.id !== as.dataset.as); save(); render(); }
     const gl = ev.target.closest("[data-gl]");
     if (gl) { S.goals = S.goals.filter((g) => g.id !== gl.dataset.gl); save(); render(); }
+    const wkb = ev.target.closest("[data-wk]");
+    if (wkb) {
+      const k = wkb.dataset.wk, r = S.weeks[k], was = r.choice === "save" ? "저금" : "정산";
+      delete r.choice; delete r.amount;
+      if (!Object.keys(r).length) delete S.weeks[k];
+      save(); render(); toast(`${was}을 취소했어요`);
+    }
   });
 
   function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => (t.hidden = true), 1600); }
