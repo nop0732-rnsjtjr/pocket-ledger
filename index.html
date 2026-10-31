@@ -190,6 +190,15 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
           <button class="btn ghost small" id="pastNo" type="button">괜찮아요</button>
         </div>
       </div>
+      <div class="card" id="lastWeekCard" hidden>
+        <span class="label">지난주 정산</span>
+        <div id="lastWeekText"></div>
+        <div class="inline" style="flex-wrap:wrap">
+          <button class="btn small" type="button" data-lw="carry">이번 주로 이월</button>
+          <button class="btn small" type="button" data-lw="save">저금하기</button>
+          <button class="btn ghost small" type="button" data-lw="spread">남은 기간에 나누기</button>
+        </div>
+      </div>
       <div class="notice" id="setupNote" hidden>
         <span>월급과 월급날을 먼저 설정해 주세요.</span>
         <button class="btn small" type="button" data-go="settings">설정하기</button>
@@ -202,6 +211,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
         <div class="rows num">
           <div class="row"><span id="availLabel">쓸 수 있는 돈 (월급 + 수입 − 고정지출)</span><span id="avail"></span></div>
           <div class="row" id="goalRow" hidden><span>목표 저축으로 떼어둔 돈</span><span id="goalSum"></span></div>
+          <div class="row" id="weekSaveRow" hidden><span>주간 저금 (남은 돈 저금)</span><span id="weekSave"></span></div>
           <div class="row"><span>지금까지 쓴 돈</span><span id="spent"></span></div>
         </div>
       </div>
@@ -224,8 +234,22 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
           <div class="rows num">
             <div class="row"><span>주간 가능</span><span id="weekBudget"></span></div>
             <div class="row"><span>쓴 돈</span><span id="weekOut"></span></div>
+            <div class="row" id="weekCarryRow" hidden><span>이월</span><span id="weekCarry"></span></div>
+            <div class="row" id="weekBoostRow" hidden><span>땡겨씀</span><span id="weekBoost"></span></div>
             <div class="row"><span>기간</span><span id="weekRange"></span></div>
           </div>
+          <button class="btn ghost small" type="button" id="boostBtn">땡겨쓰기</button>
+        </div>
+      </div>
+
+      <div class="card" id="boostCard" hidden>
+        <span class="label">이번 주에 더 쓸 돈 (땡겨쓰기)</span>
+        <input id="boostAmt" inputmode="numeric" placeholder="예: 100,000">
+        <p class="hint" id="boostHint"></p>
+        <div class="inline">
+          <button class="btn" type="button" id="boostSave" style="flex:1">저장</button>
+          <button class="btn ghost" type="button" id="boostClear" hidden>땡겨쓰기 취소</button>
+          <button class="btn ghost" type="button" id="boostClose">닫기</button>
         </div>
       </div>
 
@@ -410,6 +434,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
   if (!S || !Array.isArray(S.entries)) S = sample();
   if (!Array.isArray(S.assets)) S.assets = [];
   if (!Array.isArray(S.goals)) S.goals = [];
+  if (!S.weeks || typeof S.weeks !== "object") S.weeks = {};
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (_) {} };
 
   // 월급날 기준 이번 달 기간: [start, next)
@@ -448,27 +473,49 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     });
     const goalSum = goals.filter((g) => g.active).reduce((a, g) => a + g.monthly, 0);
     const available = (S.salary || 0) + extraIn - fixedSum - goalSum;
-    const remain = available - spent;
+    // 주간 선택 기록 (S.weeks[주 시작일]): boost = 땡겨쓰기, choice = 지난주 남은 돈 처리(carry 이월 / save 저금 / spread 나누기)
+    const W = S.weeks;
+    const savesIn = (k) => Object.entries(W).filter(([wk, r]) => r.choice === "save" && wk >= sKey && wk < k).reduce((a, [, r]) => a + r.amount, 0);
+    const weekSave = savesIn(nKey);
+    const remain = available - spent - weekSave;
     // 이전 지출(past)은 이번 달 합계에만 들어가고 오늘·이번 주 계산에서는 빠짐
     const todayArr = inP.filter((e) => e.date === tKey && !e.past);
     const todayOut = sum(todayArr, "out"), todayIn = sum(todayArr, "in");
     const daysLeft = Math.max(1, diffDays(today, next)); // 오늘 포함
-    // 하루 평균: 오늘 아침 기준 남은 돈을 남은 날로 나눔 (오늘 안에서는 고정)
-    const daily = Math.max(0, Math.floor((remain + todayOut) / daysLeft));
+
+    // 주(월~일, 월급 기간 안으로 자름)의 예산은 주가 시작할 때 정해짐:
+    // (그 주 시작 때 남은 돈 − 이월분) ÷ 남은 날 × 그 주 날수 + 이월분 + 땡겨쓰기
+    const segOf = (d) => {
+      const mon = addDays(d, -((d.getDay() + 6) % 7));
+      return { ws: mon < start ? start : mon, we: addDays(mon, 7) > next ? next : addDays(mon, 7) };
+    };
+    function weekCalc({ ws, we }) {
+      const wsK = keyOf(ws), weK = keyOf(we);
+      const prev = ws > start ? segOf(addDays(ws, -1)) : null;
+      const prevRec = prev ? W[keyOf(prev.ws)] : null;
+      const carryIn = prevRec && prevRec.choice === "carry" ? prevRec.amount : 0;
+      const spentBefore = sum(inP.filter((e) => e.date < wsK || e.past), "out");
+      const remainAtWs = available - spentBefore - savesIn(wsK);
+      const base = Math.max(0, Math.floor((remainAtWs - carryIn) / diffDays(ws, next))) * diffDays(ws, we);
+      const boost = (W[wsK] && W[wsK].boost) || 0;
+      const budget = base + carryIn + boost;
+      const arr = inP.filter((e) => e.date >= wsK && e.date < weK && !e.past);
+      const out = sum(arr, "out");
+      return { ws, we, wsK, prev, carryIn, boost, budget, arr, out, left: budget - out };
+    }
+    const wk = weekCalc(segOf(today));
+    // 하루 평균: 이번 주 예산 중 오늘 아침 기준 남은 돈 ÷ 이번 주 남은 날 (오늘 안에서는 고정)
+    const weekBefore = sum(wk.arr.filter((e) => e.date < tKey), "out");
+    const daily = Math.max(0, Math.floor((wk.budget - weekBefore) / diffDays(today, wk.we)));
     const todayLeft = daily - todayOut;
-    // 이번 주: 월요일 ~ 일요일, 월급 기간 안으로 자름
-    const monday = addDays(today, -((today.getDay() + 6) % 7));
-    const wStart = monday < start ? start : monday;
-    const wEndEx = addDays(monday, 7) > next ? next : addDays(monday, 7);
-    const wsKey = keyOf(wStart), weKey = keyOf(wEndEx);
-    const weekArr = inP.filter((e) => e.date >= wsKey && e.date < weKey && !e.past);
-    const weekOut = sum(weekArr, "out");
-    const weekBefore = sum(weekArr.filter((e) => e.date < tKey), "out");
-    const weekBudget = weekBefore + daily * diffDays(today, wEndEx);
-    const weekLeft = weekBudget - weekOut;
+    // 지난주(같은 월급 기간 안)에 남은 돈이 있고 아직 처리 방법을 안 골랐으면 물어봄
+    const lastWeek = wk.prev ? weekCalc(wk.prev) : null;
+    const askLastWeek = lastWeek && lastWeek.left > 0 && !(W[lastWeek.wsK] && W[lastWeek.wsK].choice) ? lastWeek : null;
+    const weekSavedAll = Object.values(W).filter((r) => r.choice === "save").reduce((a, r) => a + r.amount, 0);
     return { today, start, next, daysLeft, fixedSum, spent, available, remain, todayOut, todayIn, daily, todayLeft,
-      wStart, wEnd: addDays(wEndEx, -1), weekOut, weekBudget, weekLeft,
-      savings, savedSum, assetSum, worth: savedSum + assetSum, goals, goalSum };
+      wStart: wk.ws, wEnd: addDays(wk.we, -1), wsKey: wk.wsK, weekOut: wk.out, weekBudget: wk.budget, weekLeft: wk.left,
+      weekBoost: wk.boost, weekCarry: wk.carryIn, laterDays: diffDays(wk.we, next), askLastWeek, weekSave, weekSavedAll,
+      savings, savedSum, assetSum, worth: savedSum + assetSum + weekSavedAll, goals, goalSum };
   }
 
   const setMoney = (el, n) => { el.innerHTML = `${n < 0 ? "−" : ""}${Math.abs(Math.round(n)).toLocaleString("ko-KR")}<small>원</small>`; el.classList.toggle("neg", n < 0); };
@@ -520,9 +567,18 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     setMoney($("weekLeft"), c.weekLeft); pill($("weekPill"), c.weekLeft, c.weekBudget);
     $("weekBudget").textContent = won(c.weekBudget); $("weekOut").textContent = won(c.weekOut);
     $("weekRange").textContent = `${md(c.wStart)}~${md(c.wEnd)}`;
+    $("weekCarryRow").hidden = !c.weekCarry; $("weekCarry").textContent = "+" + won(c.weekCarry);
+    $("weekBoostRow").hidden = !c.weekBoost; $("weekBoost").textContent = "+" + won(c.weekBoost);
+    $("boostBtn").textContent = c.weekBoost ? "땡겨쓰기 수정" : "땡겨쓰기";
+    $("weekSaveRow").hidden = !c.weekSave; $("weekSave").textContent = won(c.weekSave);
+    const lw = c.askLastWeek;
+    $("lastWeekCard").hidden = !lw || S.sample;
+    const lwEnd = lw && addDays(lw.we, -1);
+    if (lw) $("lastWeekText").innerHTML = `지난주(${md(lw.ws)}${lwEnd > lw.ws ? "~" + md(lwEnd) : ""}) <b class="pos num">${won(lw.left)}</b> 덜 썼어요! 이 돈을 어떻게 할까요?`;
 
     setMoney($("worth"), c.worth);
     $("worthRows").innerHTML = (c.savings.length ? `<div class="row"><span>적금으로 모은 돈</span><span>${won(c.savedSum)}</span></div>` : "")
+      + (c.weekSavedAll ? `<div class="row"><span>주간 저금</span><span>${won(c.weekSavedAll)}</span></div>` : "")
       + S.assets.map((x) => `<div class="row"><span>${esc(x.name)}</span><span>${won(x.amount)}</span></div>`).join("")
       || `<div class="empty">설정에서 적금이나 통장 잔고 같은 자산을 추가해 보세요.</div>`;
     $("savingsHome").innerHTML = c.savings.map((s) => {
@@ -564,6 +620,42 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     toast(`${n}건을 이전 지출로 바꿨어요`);
   };
   $("pastNo").onclick = () => { S.pastNoteOff = true; save(); render(); };
+
+  // 지난주 남은 돈: 이월 / 저금 / 남은 기간에 나누기 (금액은 고른 순간 기준으로 기록)
+  document.querySelectorAll("[data-lw]").forEach((b) => (b.onclick = () => {
+    const lw = compute().askLastWeek; if (!lw) return;
+    S.weeks[lw.wsK] = { ...(S.weeks[lw.wsK] || {}), choice: b.dataset.lw, amount: lw.left };
+    save(); render();
+    toast({ carry: `${won(lw.left)}을 이번 주로 넘겼어요`, save: `${won(lw.left)}을 저금했어요`, spread: "남은 기간에 나눠서 쓸게요" }[b.dataset.lw]);
+  }));
+
+  // 땡겨쓰기: 이번 주 예산을 늘리고, 그만큼 다음 주부터 줄어듦
+  const boostPreview = () => {
+    const c = compute(), amt = parseNum($("boostAmt").value);
+    $("boostHint").textContent = c.laterDays > 0
+      ? `다음 주부터 하루 약 ${won(Math.round(amt / c.laterDays / 100) * 100)}씩 덜 쓰게 돼요. (남은 ${c.laterDays}일에 나눠서)`
+      : "이번 주가 이번 달 마지막 주라서 이번 달 남은 돈에서 바로 빠져요.";
+  };
+  $("boostAmt").addEventListener("input", boostPreview);
+  $("boostBtn").onclick = () => {
+    const c = compute();
+    $("boostAmt").value = c.weekBoost ? c.weekBoost.toLocaleString("ko-KR") : "";
+    $("boostClear").hidden = !c.weekBoost;
+    boostPreview(); $("boostCard").hidden = false; $("boostAmt").focus();
+  };
+  $("boostClose").onclick = () => { $("boostCard").hidden = true; };
+  const setBoost = (amt) => {
+    const k = compute().wsKey, rec = { ...(S.weeks[k] || {}) };
+    if (amt) rec.boost = amt; else delete rec.boost;
+    if (Object.keys(rec).length) S.weeks[k] = rec; else delete S.weeks[k];
+    S.sample = false; save(); render(); $("boostCard").hidden = true;
+  };
+  $("boostSave").onclick = () => {
+    const amt = parseNum($("boostAmt").value);
+    if (!amt) { toast("금액을 입력해 주세요"); return; }
+    setBoost(amt); toast(`이번 주에 ${won(amt)} 더 쓸 수 있어요`);
+  };
+  $("boostClear").onclick = () => { setBoost(0); toast("땡겨쓰기를 취소했어요"); };
 
   // 화면 전환
   function go(v) {
@@ -609,7 +701,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
 
   // 설정
   for (let i = 1; i <= 31; i++) $("payday").insertAdjacentHTML("beforeend", `<option value="${i}">매달 ${i}일</option>`);
-  liveComma($("salary")); liveComma($("fxAmt")); liveComma($("asAmt")); liveComma($("glAmt"));
+  liveComma($("salary")); liveComma($("fxAmt")); liveComma($("asAmt")); liveComma($("glAmt")); liveComma($("boostAmt"));
   for (let i = 1; i <= 24; i++) $("glMonths").insertAdjacentHTML("beforeend", `<option value="${i}"${i === 3 ? " selected" : ""}>${i}개월 동안 모으기</option>`);
   const glDefaultHint = $("glHint").textContent;
   const glPreview = () => {
@@ -657,7 +749,7 @@ nav.tabs button[aria-selected="true"] { color: var(--ink); font-weight: 700; }
     S.sample = false; $("asName").value = ""; $("asAmt").value = ""; save(); render();
     toast(same ? `${name} 금액을 바꿨어요` : "자산을 추가했어요");
   };
-  const blank = () => ({ sample: false, salary: 0, payday: 25, fixed: [], assets: [], goals: [], entries: [] });
+  const blank = () => ({ sample: false, salary: 0, payday: 25, fixed: [], assets: [], goals: [], weeks: {}, entries: [] });
   function showReset() {
     $("resetArea").innerHTML = `<button class="btn ghost" type="button" id="resetBtn">모든 기록 지우기</button>`;
     $("resetBtn").onclick = () => {

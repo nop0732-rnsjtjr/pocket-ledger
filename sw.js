@@ -1,5 +1,5 @@
 // 앱 파일을 저장해 두고 인터넷 없이도 열리게 함. 파일을 고치면 VERSION 숫자를 올릴 것.
-const VERSION = "v5";
+const VERSION = "v6";
 const CACHE = "pocket-ledger-" + VERSION;
 const FILES = ["./", "index.html", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png"];
 
